@@ -6,56 +6,7 @@
     <title>UI Automator 录制工具</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <style>
-        .device-list {
-            max-height: 300px;
-            overflow-y: auto;
-        }
-        .screen-container {
-            position: relative;
-            background-color: #222;
-            border-radius: 20px;
-            overflow: hidden;
-            display: inline-block;
-            box-shadow: 0 0 20px rgba(0,0,0,0.3);
-        }
-        .screen-overlay {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            cursor: pointer;
-        }
-        .record-indicator {
-            display: none;
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            width: 20px;
-            height: 20px;
-            border-radius: 50%;
-            background-color: red;
-            animation: pulse 1.5s infinite;
-        }
-        @keyframes pulse {
-            0% { opacity: 1; }
-            50% { opacity: 0.5; }
-            100% { opacity: 1; }
-        }
-        .script-preview {
-            max-height: 400px;
-            overflow-y: auto;
-            font-family: monospace;
-        }
-        .script-item {
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-        .script-item:hover {
-            background-color: #f0f0f0;
-        }
-    </style>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
     <div class="container mt-4">
@@ -140,6 +91,9 @@
         </div>
     </div>
 
+    <!-- 状态消息提示 -->
+    <div id="statusMessage" class="status-message"></div>
+
     <script src="https://cdn.jsdelivr.net/npm/jquery@3.6.0/dist/jquery.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
@@ -149,6 +103,7 @@
         let lastTouchY = 0;
         let isDragging = false;
         let screenUpdateInterval;
+        let screenScale = 1;
 
         // 页面加载完成后初始化
         $(document).ready(function() {
@@ -182,7 +137,21 @@
                 e.preventDefault();
                 endTouch();
             });
+
+            // 监听窗口大小变化，调整屏幕显示
+            $(window).resize(function() {
+                updateScreenScale();
+            });
         });
+
+        // 显示状态消息
+        function showStatusMessage(message, duration = 3000) {
+            const $status = $('#statusMessage');
+            $status.text(message).fadeIn(300);
+            setTimeout(() => {
+                $status.fadeOut(300);
+            }, duration);
+        }
 
         // 从触摸事件中获取坐标数据
         function getTouchEventData(e) {
@@ -194,6 +163,7 @@
 
         // 刷新设备列表
         function refreshDeviceList() {
+            showStatusMessage('正在刷新设备列表...');
             $.get('/devices', function(data) {
                 if (data.success) {
                     const deviceList = $('#deviceList');
@@ -201,6 +171,7 @@
 
                     if (data.devices.length === 0) {
                         deviceList.append('<li class="list-group-item">未发现设备，请确保设备已连接并开启USB调试</li>');
+                        showStatusMessage('未发现设备');
                     } else {
                         data.devices.forEach(deviceId => {
                             const isConnected = deviceId === currentDeviceId;
@@ -225,10 +196,13 @@
                                 connectDevice(deviceId);
                             }
                         });
+                        showStatusMessage(`发现 ${data.devices.length} 台设备`);
                     }
                 } else {
-                    alert('获取设备列表失败: ' + data.error);
+                    showStatusMessage('获取设备列表失败: ' + data.error, 5000);
                 }
+            }).fail(function() {
+                showStatusMessage('获取设备列表失败', 5000);
             });
         }
 
@@ -245,6 +219,7 @@
         }
 
         function doConnect(deviceId) {
+            showStatusMessage(`正在连接设备 ${deviceId}...`);
             $.get(`/connect/${deviceId}`, function(data) {
                 if (data.success) {
                     currentDeviceId = deviceId;
@@ -253,14 +228,18 @@
                     $('#startRecording').prop('disabled', false);
                     refreshDeviceList();
                     startScreenUpdates();
+                    showStatusMessage(`已连接设备 ${deviceId}`);
                 } else {
-                    alert('连接设备失败: ' + data.error);
+                    showStatusMessage('连接设备失败: ' + data.error, 5000);
                 }
+            }).fail(function() {
+                showStatusMessage('连接设备失败', 5000);
             });
         }
 
         // 断开设备连接
         function disconnectDevice(deviceId, callback) {
+            showStatusMessage(`正在断开设备 ${deviceId}...`);
             $.get(`/disconnect/${deviceId}`, function(data) {
                 if (data.success) {
                     if (deviceId === currentDeviceId) {
@@ -282,10 +261,13 @@
                         }
                     }
                     refreshDeviceList();
+                    showStatusMessage(`已断开设备 ${deviceId}`);
                     if (callback) callback();
                 } else {
-                    alert('断开设备失败: ' + data.error);
+                    showStatusMessage('断开设备失败: ' + data.error, 5000);
                 }
+            }).fail(function() {
+                showStatusMessage('断开设备失败', 5000);
             });
         }
 
@@ -301,9 +283,12 @@
                     $('#saveScript').prop('disabled', true);
                     $('#recordingIndicator').show();
                     $('#scriptPreview').text('正在录制操作...');
+                    showStatusMessage('开始录制');
                 } else {
-                    alert('开始录制失败: ' + data.error);
+                    showStatusMessage('开始录制失败: ' + data.error, 5000);
                 }
+            }).fail(function() {
+                showStatusMessage('开始录制失败', 5000);
             });
         }
 
@@ -318,9 +303,12 @@
                     $('#stopRecording').prop('disabled', true);
                     $('#saveScript').prop('disabled', false);
                     $('#recordingIndicator').hide();
+                    showStatusMessage('已停止录制');
                 } else {
-                    alert('停止录制失败: ' + data.error);
+                    showStatusMessage('停止录制失败: ' + data.error, 5000);
                 }
+            }).fail(function() {
+                showStatusMessage('停止录制失败', 5000);
             });
         }
 
@@ -328,14 +316,17 @@
         function saveScript() {
             if (!currentDeviceId) return;
 
+            showStatusMessage('正在保存脚本...');
             $.get(`/save_script/${currentDeviceId}`, function(data) {
                 if (data.success) {
                     $('#scriptPreview').text(data.content);
-                    alert(`脚本已保存: ${data.filename}`);
+                    showStatusMessage(`脚本已保存: ${data.filename}`);
                     refreshSavedScripts();
                 } else {
-                    alert('保存脚本失败: ' + data.error);
+                    showStatusMessage('保存脚本失败: ' + data.error, 5000);
                 }
+            }).fail(function() {
+                showStatusMessage('保存脚本失败', 5000);
             });
         }
 
@@ -375,25 +366,13 @@
             });
         }
 
-
         // 下载脚本
         function downloadScript(filename) {
-            $.get(`/download_script/${filename}`, function(data) {
-                if (data.success) {
-                    // 创建一个下载链接
-                    const blob = new Blob([data.content], { type: 'text/plain' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = filename;
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    URL.revokeObjectURL(url);
-                } else {
-                    alert('下载脚本失败: ' + data.error);
-                }
-            });
+            showStatusMessage(`正在下载脚本 ${filename}...`);
+            window.location.href = `/download_script/${filename}`;
+            setTimeout(() => {
+                showStatusMessage(`脚本 ${filename} 下载完成`);
+            }, 1000);
         }
 
         // 开始更新屏幕
@@ -405,6 +384,7 @@
                     $.get(`/screenshot/${currentDeviceId}`, function(data) {
                         if (data.success) {
                             $('#deviceScreen').attr('src', 'data:image/jpeg;base64,' + data.image);
+                            updateScreenScale();
                         }
                     }).fail(function() {
                         console.error('获取屏幕截图失败');
@@ -420,6 +400,58 @@
                 clearInterval(screenUpdateInterval);
             }
             screenUpdateInterval = setInterval(updateScreen, 500);
+        }
+
+        // 更新屏幕缩放比例
+        function updateScreenScale() {
+            const $screen = $('#deviceScreen');
+            if ($screen[0].naturalWidth > 0) {
+                screenScale = $screen.width() / $screen[0].naturalWidth;
+            }
+        }
+
+        // 添加操作视觉反馈
+        function addActionFeedback(x, y, type, x2 = null, y2 = null) {
+            const $overlay = $('#screenOverlay');
+
+            if (type === 'click') {
+                // 点击反馈
+                const $feedback = $('<div class="action-feedback"></div>');
+                $feedback.css({
+                    left: x + 'px',
+                    top: y + 'px'
+                });
+                $overlay.append($feedback);
+
+                // 自动移除
+                setTimeout(() => {
+                    $feedback.remove();
+                }, 1000);
+            } else if (type === 'swipe' && x2 !== null && y2 !== null) {
+                // 滑动反馈
+                const $feedback = $('<div class="swipe-feedback"></div>');
+
+                // 计算线的长度和角度
+                const length = Math.sqrt(Math.pow(x2 - x, 2) + Math.pow(y2 - y, 2));
+                const angle = Math.atan2(y2 - y, x2 - x) * 180 / Math.PI;
+
+                $feedback.css({
+                    width: length + 'px',
+                    height: '2px',
+                    left: x + 'px',
+                    top: y + 'px',
+                    transformOrigin: '0 0',
+                    transform: `rotate(${angle}deg)`,
+                    backgroundColor: 'rgba(255, 255, 255, 0.6)'
+                });
+
+                $overlay.append($feedback);
+
+                // 自动移除
+                setTimeout(() => {
+                    $feedback.remove();
+                }, 1000);
+            }
         }
 
         // 处理触摸开始事件
@@ -469,6 +501,7 @@
                     x: Math.round(lastTouchX * scaleX),
                     y: Math.round(lastTouchY * scaleY)
                 };
+                addActionFeedback(lastTouchX, lastTouchY, 'click');
             } else {
                 // 滑动操作
                 action = {
@@ -478,6 +511,7 @@
                     x2: Math.round(endX * scaleX),
                     y2: Math.round(endY * scaleY)
                 };
+                addActionFeedback(lastTouchX, lastTouchY, 'swipe', endX, endY);
             }
 
             // 发送操作到服务器
@@ -489,7 +523,11 @@
                 success: function(data) {
                     if (!data.success) {
                         console.error('记录操作失败: ' + data.error);
+                        showStatusMessage('记录操作失败: ' + data.error, 3000);
                     }
+                },
+                error: function() {
+                    showStatusMessage('记录操作失败', 3000);
                 }
             });
         }

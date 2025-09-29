@@ -3,33 +3,93 @@ import base64
 import time
 import json
 from datetime import datetime
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, render_template, jsonify, request, send_from_directory
 import uiautomator2 as u2
 from PIL import Image
 import io
+from functools import wraps
 
 app = Flask(__name__)
 app.config['SAVED_SCRIPTS_DIR'] = 'saved_scripts'
-app.config['RECORDING_THRESHOLD'] = 5  # 滑动识别阈值（像素）
-app.config['MIN_DELAY'] = 0.1  # 最小操作间隔（秒）
+app.config['STATIC_FOLDER'] = 'static'
 
 # 确保保存脚本的目录存在
 os.makedirs(app.config['SAVED_SCRIPTS_DIR'], exist_ok=True)
+os.makedirs(os.path.join(app.config['STATIC_FOLDER'], 'css'), exist_ok=True)
 
 # 存储设备连接和录制状态
-device_connections = {}  # 设备连接对象 {device_id: device_obj}
-recording_sessions = {}  # 录制会话 {device_id: {actions: [], start_time: float, last_action_time: float}}
+device_connections = {}  # 设备连接对象
+recording_sessions = {}  # 录制会话 {device_id: {actions: [], start_time: }}
+
+
+# 工具函数：设备连接检查装饰器
+def device_required(f):
+    @wraps(f)
+    def decorated_function(device_id, *args, **kwargs):
+        if device_id not in device_connections:
+            return jsonify({
+                'success': False,
+                'error': f'未连接到设备 {device_id}'
+            })
+        return f(device_id, *args, **kwargs)
+
+    return decorated_function
+
+
+# 工具函数：录制状态检查装饰器
+def recording_required(f):
+    @wraps(f)
+    @device_required
+    def decorated_function(device_id, *args, **kwargs):
+        session = recording_sessions.get(device_id)
+        if not session or session['start_time'] is None:
+            return jsonify({
+                'success': False,
+                'error': f'设备 {device_id} 未在录制中'
+            })
+        return f(device_id, *args, **kwargs)
+
+    return decorated_function
 
 
 def get_device_list():
-    """获取已连接的设备列表（优化版）"""
+    """获取已连接的设备列表"""
     try:
-        from uiautomator2 import adbutils
-        devices = adbutils.adb.device_list()
-        return [d.serial for d in devices]
+        devices = u2.device_list()
+        return [d['serial'] for d in devices]
     except Exception as e:
         app.logger.error(f"获取设备列表失败: {str(e)}")
         return []
+
+
+def generate_script_content(device_id, actions):
+    """生成Python脚本内容"""
+    script_lines = [
+        'import uiautomator2 as u2',
+        'import time',
+        '',
+        f"d = u2.connect('{device_id}')",
+        "d.wait_ready(timeout=10.0)",
+        ""
+    ]
+
+    # 添加操作
+    prev_time = 0
+    for action in actions:
+        # 添加延迟（相对于上一个操作）
+        delay = action['time'] - prev_time
+        if delay > 0.1:  # 只添加明显的延迟
+            script_lines.append(f"time.sleep({delay:.2f})")
+
+        # 添加操作代码
+        if action['type'] == 'click':
+            script_lines.append(f"d.click({action['x']}, {action['y']})")
+        elif action['type'] == 'swipe':
+            script_lines.append(f"d.swipe({action['x1']}, {action['y1']}, {action['x2']}, {action['y2']})")
+
+        prev_time = action['time']
+
+    return '\n'.join(script_lines)
 
 
 @app.route('/')
@@ -61,16 +121,14 @@ def connect(device_id):
                 'message': f'已连接到设备 {device_id}'
             })
 
-        # 连接设备并初始化
+        # 连接设备
         d = u2.connect(device_id)
-        d.wait_ready(timeout=10.0)  # 等待设备就绪
         device_connections[device_id] = d
 
-        # 初始化录制会话（新增last_action_time记录）
+        # 初始化录制会话
         recording_sessions[device_id] = {
             'actions': [],
-            'start_time': None,
-            'last_action_time': 0
+            'start_time': None
         }
 
         return jsonify({
@@ -105,20 +163,15 @@ def disconnect(device_id):
 
 
 @app.route('/screenshot/<device_id>')
+@device_required
 def screenshot(device_id):
     try:
-        if device_id not in device_connections:
-            return jsonify({
-                'success': False,
-                'error': f'未连接到设备 {device_id}'
-            })
-
         d = device_connections[device_id]
         img = d.screenshot()
 
-        # 压缩图片减少传输量
+        # 将图片转换为base64
         buf = io.BytesIO()
-        img.save(buf, format='JPEG', quality=80)  # 降低质量至80%
+        img.save(buf, format='JPEG')
         img_base64 = base64.b64encode(buf.getvalue()).decode('utf-8')
 
         return jsonify({
@@ -133,19 +186,13 @@ def screenshot(device_id):
 
 
 @app.route('/start_recording/<device_id>')
+@device_required
 def start_recording(device_id):
     try:
-        if device_id not in device_connections:
-            return jsonify({
-                'success': False,
-                'error': f'未连接到设备 {device_id}'
-            })
-
-        # 初始化录制会话（重置状态）
+        # 初始化录制会话
         recording_sessions[device_id] = {
             'actions': [],
-            'start_time': time.time(),
-            'last_action_time': 0  # 记录上一次操作时间
+            'start_time': time.time()
         }
 
         return jsonify({
@@ -160,26 +207,21 @@ def start_recording(device_id):
 
 
 @app.route('/stop_recording/<device_id>')
+@device_required
 def stop_recording(device_id):
     try:
-        if device_id not in device_connections:
-            return jsonify({
-                'success': False,
-                'error': f'未连接到设备 {device_id}'
-            })
-
-        if device_id not in recording_sessions or recording_sessions[device_id]['start_time'] is None:
+        if device_id not in recording_sessions:
             return jsonify({
                 'success': False,
                 'error': f'设备 {device_id} 未在录制中'
             })
 
-        # 保留操作记录，仅标记结束
+        # 只是标记停止，保留操作记录
         recording_sessions[device_id]['start_time'] = None
 
         return jsonify({
             'success': True,
-            'message': f'已停止录制设备 {device_id} 的操作，共记录 {len(recording_sessions[device_id]["actions"])} 个操作'
+            'message': f'已停止录制设备 {device_id} 的操作'
         })
     except Exception as e:
         return jsonify({
@@ -189,48 +231,27 @@ def stop_recording(device_id):
 
 
 @app.route('/record_action/<device_id>', methods=['POST'])
+@recording_required
 def record_action(device_id):
     try:
-        if device_id not in device_connections:
-            return jsonify({
-                'success': False,
-                'error': f'未连接到设备 {device_id}'
-            })
-
-        session = recording_sessions.get(device_id)
-        if not session or session['start_time'] is None:
-            return jsonify({
-                'success': False,
-                'error': f'设备 {device_id} 未在录制中'
-            })
-
+        session = recording_sessions[device_id]
         action = request.json
         current_time = time.time()
-        relative_time = current_time - session['start_time']
 
-        # 过滤过于密集的操作（避免误触）
-        if relative_time - session['last_action_time'] < app.config['MIN_DELAY']:
-            return jsonify({
-                'success': False,
-                'error': '操作过于密集，已忽略'
-            })
-
-        # 记录相对时间和操作详情
-        action['time'] = relative_time
+        # 记录相对时间（自录制开始以来的秒数）
+        action['time'] = current_time - session['start_time']
         session['actions'].append(action)
-        session['last_action_time'] = relative_time  # 更新最后操作时间
 
         # 在设备上执行操作（给用户反馈）
         d = device_connections[device_id]
         if action['type'] == 'click':
             d.click(action['x'], action['y'])
         elif action['type'] == 'swipe':
-            # 滑动添加持续时间参数（更接近真实操作）
-            d.swipe(action['x1'], action['y1'], action['x2'], action['y2'], duration=0.5)
+            d.swipe(action['x1'], action['y1'], action['x2'], action['y2'])
 
         return jsonify({
             'success': True,
-            'message': f'操作已记录（共 {len(session["actions"])} 个）'
+            'message': '操作已记录'
         })
     except Exception as e:
         return jsonify({
@@ -240,59 +261,18 @@ def record_action(device_id):
 
 
 @app.route('/save_script/<device_id>')
+@device_required
 def save_script(device_id):
     try:
-        if device_id not in device_connections:
-            return jsonify({
-                'success': False,
-                'error': f'未连接到设备 {device_id}'
-            })
-
         session = recording_sessions.get(device_id)
         if not session or len(session['actions']) == 0:
             return jsonify({
                 'success': False,
-                'error': '没有可保存的操作记录'
+                'error': f'没有可保存的操作记录'
             })
 
-        # 生成Python脚本内容（优化版）
-        script_lines = [
-            'import uiautomator2 as u2',
-            'import time',
-            'import logging',
-            '',
-            '# 配置日志输出',
-            'logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")',
-            'logger = logging.getLogger(__name__)',
-            '',
-            f"d = u2.connect('{device_id}')",
-            "d.wait_ready(timeout=10.0)",
-            "logger.info('设备连接成功，开始执行脚本')",
-            ""
-        ]
-
-        # 添加操作（优化时间计算）
-        prev_time = 0
-        for i, action in enumerate(session['actions']):
-            # 添加延迟（相对于上一个操作）
-            delay = action['time'] - prev_time
-            if delay > app.config['MIN_DELAY']:  # 只添加明显的延迟
-                script_lines.append(f"time.sleep({delay:.2f})")
-                script_lines.append(f"logger.info('等待 {delay:.2f} 秒')")
-
-            # 添加操作代码和日志
-            if action['type'] == 'click':
-                script_lines.append(f"d.click({action['x']}, {action['y']})")
-                script_lines.append(f"logger.info('点击坐标: ({action['x']}, {action['y']})')")
-            elif action['type'] == 'swipe':
-                script_lines.append(f"d.swipe({action['x1']}, {action['y1']}, {action['x2']}, {action['y2']}, duration=0.5)")
-                script_lines.append(f"logger.info('滑动坐标: ({action['x1']},{action['y1']}) -> ({action['x2']},{action['y2']})')")
-
-            prev_time = action['time']
-
-        script_lines.append("")
-        script_lines.append("logger.info('脚本执行完成')")
-        script_content = '\n'.join(script_lines)
+        # 生成Python脚本内容
+        script_content = generate_script_content(device_id, session['actions'])
 
         # 保存脚本到文件
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -305,8 +285,7 @@ def save_script(device_id):
         return jsonify({
             'success': True,
             'filename': filename,
-            'content': script_content,
-            'action_count': len(session['actions'])  # 返回操作数量
+            'content': script_content
         })
     except Exception as e:
         return jsonify({
@@ -315,7 +294,56 @@ def save_script(device_id):
         })
 
 
-# 其他接口（saved_scripts/download_script）保持不变
+@app.route('/saved_scripts')
+def saved_scripts():
+    try:
+        # 获取已保存的脚本列表
+        scripts = []
+        for filename in os.listdir(app.config['SAVED_SCRIPTS_DIR']):
+            if filename.endswith('.py'):
+                filepath = os.path.join(app.config['SAVED_SCRIPTS_DIR'], filename)
+                scripts.append({
+                    'filename': filename,
+                    'size': os.path.getsize(filepath),
+                    'modified': datetime.fromtimestamp(os.path.getmtime(filepath)).strftime('%Y-%m-%d %H:%M:%S')
+                })
+
+        # 按修改时间排序（最新的在前）
+        scripts.sort(key=lambda x: x['modified'], reverse=True)
+
+        return jsonify({
+            'success': True,
+            'scripts': scripts
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        })
+
+
+@app.route('/download_script/<filename>')
+def download_script(filename):
+    try:
+        # 安全检查：只允许下载py文件
+        if not filename.endswith('.py'):
+            return jsonify({
+                'success': False,
+                'error': '不支持的文件类型'
+            })
+
+        return send_from_directory(
+            app.config['SAVED_SCRIPTS_DIR'],
+            filename,
+            as_attachment=True,
+            mimetype='text/plain'
+        )
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        })
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)

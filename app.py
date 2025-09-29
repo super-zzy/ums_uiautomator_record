@@ -53,10 +53,17 @@ def recording_required(f):
 
 
 def get_device_list():
-    """获取已连接的设备列表"""
+    """获取已连接的设备列表（修复了设备列表获取方法）"""
     try:
-        devices = u2.device_list()
-        return [d['serial'] for d in devices]
+        # 使用uiautomator2正确的设备列表获取方法
+        from uiautomator2 import connect_adb_wifi
+        import subprocess
+        import re
+
+        # 通过adb命令获取设备列表
+        result = subprocess.check_output(['adb', 'devices']).decode('utf-8')
+        devices = re.findall(r'(\S+)\s+device', result)
+        return devices
     except Exception as e:
         app.logger.error(f"获取设备列表失败: {str(e)}")
         return []
@@ -237,6 +244,12 @@ def record_action(device_id):
         session = recording_sessions[device_id]
         action = request.json
         current_time = time.time()
+
+        action['time'] = current_time - session['start_time']
+        session['actions'].append(action)
+
+        # 添加日志：打印当前操作和累计操作数
+        app.logger.info(f"设备 {device_id} 记录操作: {action}，累计 {len(session['actions'])} 条")
 
         # 记录相对时间（自录制开始以来的秒数）
         action['time'] = current_time - session['start_time']

@@ -341,18 +341,18 @@
                         savedScripts.append('<li class="list-group-item">暂无保存的脚本</li>');
                     } else {
                         data.scripts.forEach(script => {
-                            const item = $(`
-                                <li class="list-group-item script-item d-flex justify-content-between align-items-center"
-                                    data-filename="${script.filename}">
-                                    <div>
-                                        <small class="d-block text-truncate">${script.filename}</small>
-                                        <small class="text-muted">${script.modified}</small>
-                                    </div>
-                                    <i class="fas fa-download"></i>
-                                </li>
-                            `);
-                            savedScripts.append(item);
-                        });
+                        const item = $(`
+                            <li class="list-group-item script-item d-flex justify-content-between align-items-center"
+                                data-filename="${script.filename}">
+                                <div>
+                                    <small class="d-block script-filename-container">${script.filename}</small>
+                                    <small class="text-muted">${script.modified}</small>
+                                </div>
+                                <i class="fas fa-download"></i>
+                            </li>
+                        `);
+                        savedScripts.append(item);
+                    });
 
                         // 绑定下载脚本事件
                         $('.script-item').click(function() {
@@ -494,7 +494,7 @@
             const distance = Math.sqrt(Math.pow(endX - lastTouchX, 2) + Math.pow(endY - lastTouchY, 2));
 
             let action;
-            if (distance < 5) {
+            if (distance < 3) {
                 // 点击操作
                 action = {
                     type: 'click',
@@ -523,11 +523,12 @@
                 success: function(data) {
                     if (!data.success) {
                         console.error('记录操作失败: ' + data.error);
-                        showStatusMessage('记录操作失败: ' + data.error, 3000);
+                        alert('记录操作失败: ' + data.error); // 增加用户提示
                     }
                 },
-                error: function() {
-                    showStatusMessage('记录操作失败', 3000);
+                error: function(xhr) {
+                    console.error('发送操作失败: ' + xhr.responseText);
+                    alert('发送操作失败，请重试'); // 增加网络错误提示
                 }
             });
         }

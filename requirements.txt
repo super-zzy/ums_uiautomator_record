@@ -1,0 +1,4 @@
+Flask==2.3.3
+uiautomator2==2.16.10
+Pillow==10.1.0
+werkzeug==2.3.7

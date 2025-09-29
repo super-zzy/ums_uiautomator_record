@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UI Automator 录制工具</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .device-list {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .screen-container {
+            position: relative;
+            background-color: #222;
+            border-radius: 20px;
+            overflow: hidden;
+            display: inline-block;
+            box-shadow: 0 0 20px rgba(0,0,0,0.3);
+        }
+        .screen-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            cursor: pointer;
+        }
+        .record-indicator {
+            display: none;
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background-color: red;
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+        .script-preview {
+            max-height: 400px;
+            overflow-y: auto;
+            font-family: monospace;
+        }
+        .script-item {
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .script-item:hover {
+            background-color: #f0f0f0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container mt-4">
+        <h1 class="mb-4">
+            <i class="fas fa-mobile-alt"></i> UI Automator 录制工具
+        </h1>
+
+        <div class="row">
+            <!-- 设备管理区域 -->
+            <div class="col-md-3 mb-4">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="fas fa-mobile-alt"></i> 设备管理</h5>
+                    </div>
+                    <div class="card-body">
+                        <button id="refreshDevices" class="btn btn-primary w-100 mb-3">
+                            <i class="fas fa-sync-alt"></i> 刷新设备列表
+                        </button>
+
+                        <div class="device-list mb-3">
+                            <ul id="deviceList" class="list-group">
+                                <!-- 设备列表将通过JavaScript动态填充 -->
+                            </ul>
+                        </div>
+
+                        <div id="connectionStatus" class="alert alert-secondary text-center">
+                            未连接设备
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 屏幕显示区域 -->
+            <div class="col-md-6 mb-4">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="fas fa-desktop"></i> 设备屏幕</h5>
+                    </div>
+                    <div class="card-body text-center">
+                        <div id="screenContainer" class="screen-container">
+                            <img id="deviceScreen" src="" alt="设备屏幕" class="img-fluid">
+                            <div id="screenOverlay" class="screen-overlay"></div>
+                        </div>
+
+                        <div class="mt-3">
+                            <button id="startRecording" class="btn btn-success me-2" disabled>
+                                <i class="fas fa-circle"></i> 开始录制
+                            </button>
+                            <button id="stopRecording" class="btn btn-danger me-2" disabled>
+                                <i class="fas fa-stop"></i> 停止录制
+                            </button>
+                            <button id="saveScript" class="btn btn-primary" disabled>
+                                <i class="fas fa-save"></i> 保存脚本
+                            </button>
+                        </div>
+
+                        <div id="recordingIndicator" class="record-indicator"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 脚本预览区域 -->
+            <div class="col-md-3 mb-4">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="fas fa-code"></i> 脚本预览</h5>
+                    </div>
+                    <div class="card-body">
+                        <div id="scriptPreview" class="script-preview p-2 bg-light border rounded">
+                            连接设备并开始录制操作以生成脚本...
+                        </div>
+
+                        <div class="mt-3">
+                            <h6>已保存的脚本</h6>
+                            <div id="savedScripts" class="list-group">
+                                <!-- 已保存的脚本将通过JavaScript动态填充 -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/jquery@3.6.0/dist/jquery.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        let currentDeviceId = null;
+        let isRecording = false;
+        let lastTouchX = 0;
+        let lastTouchY = 0;
+        let isDragging = false;
+        let screenUpdateInterval;
+
+        // 页面加载完成后初始化
+        $(document).ready(function() {
+            // 刷新设备列表
+            refreshDeviceList();
+            // 刷新已保存脚本
+            refreshSavedScripts();
+
+            // 绑定按钮事件
+            $('#refreshDevices').click(refreshDeviceList);
+            $('#startRecording').click(startRecording);
+            $('#stopRecording').click(stopRecording);
+            $('#saveScript').click(saveScript);
+
+            // 屏幕点击和滑动事件
+            $('#screenOverlay').mousedown(startTouch);
+            $('#screenOverlay').mousemove(moveTouch);
+            $('#screenOverlay').mouseup(endTouch);
+            $('#screenOverlay').mouseleave(endTouch);
+
+            // 触摸屏支持
+            $('#screenOverlay').on('touchstart', function(e) {
+                e.preventDefault();
+                startTouch(getTouchEventData(e));
+            });
+            $('#screenOverlay').on('touchmove', function(e) {
+                e.preventDefault();
+                moveTouch(getTouchEventData(e));
+            });
+            $('#screenOverlay').on('touchend', function(e) {
+                e.preventDefault();
+                endTouch();
+            });
+        });
+
+        // 从触摸事件中获取坐标数据
+        function getTouchEventData(e) {
+            return {
+                offsetX: e.touches[0].clientX - $(e.target).offset().left,
+                offsetY: e.touches[0].clientY - $(e.target).offset().top
+            };
+        }
+
+        // 刷新设备列表
+        function refreshDeviceList() {
+            $.get('/devices', function(data) {
+                if (data.success) {
+                    const deviceList = $('#deviceList');
+                    deviceList.empty();
+
+                    if (data.devices.length === 0) {
+                        deviceList.append('<li class="list-group-item">未发现设备，请确保设备已连接并开启USB调试</li>');
+                    } else {
+                        data.devices.forEach(deviceId => {
+                            const isConnected = deviceId === currentDeviceId;
+                            const item = $(`
+                                <li class="list-group-item d-flex justify-content-between align-items-center">
+                                    ${deviceId}
+                                    <button class="btn ${isConnected ? 'btn-danger' : 'btn-primary'} btn-sm connect-btn"
+                                            data-device-id="${deviceId}">
+                                        ${isConnected ? '断开' : '连接'}
+                                    </button>
+                                </li>
+                            `);
+                            deviceList.append(item);
+                        });
+
+                        // 绑定连接/断开按钮事件
+                        $('.connect-btn').click(function() {
+                            const deviceId = $(this).data('device-id');
+                            if (deviceId === currentDeviceId) {
+                                disconnectDevice(deviceId);
+                            } else {
+                                connectDevice(deviceId);
+                            }
+                        });
+                    }
+                } else {
+                    alert('获取设备列表失败: ' + data.error);
+                }
+            });
+        }
+
+        // 连接设备
+        function connectDevice(deviceId) {
+            // 如果已经有连接的设备，先断开
+            if (currentDeviceId && currentDeviceId !== deviceId) {
+                disconnectDevice(currentDeviceId, function() {
+                    doConnect(deviceId);
+                });
+            } else {
+                doConnect(deviceId);
+            }
+        }
+
+        function doConnect(deviceId) {
+            $.get(`/connect/${deviceId}`, function(data) {
+                if (data.success) {
+                    currentDeviceId = deviceId;
+                    $('#connectionStatus').removeClass('alert-secondary').addClass('alert-success')
+                        .text(`已连接设备: ${deviceId}`);
+                    $('#startRecording').prop('disabled', false);
+                    refreshDeviceList();
+                    startScreenUpdates();
+                } else {
+                    alert('连接设备失败: ' + data.error);
+                }
+            });
+        }
+
+        // 断开设备连接
+        function disconnectDevice(deviceId, callback) {
+            $.get(`/disconnect/${deviceId}`, function(data) {
+                if (data.success) {
+                    if (deviceId === currentDeviceId) {
+                        currentDeviceId = null;
+                        $('#connectionStatus').removeClass('alert-success').addClass('alert-secondary')
+                            .text('未连接设备');
+                        $('#startRecording').prop('disabled', true);
+                        $('#stopRecording').prop('disabled', true);
+                        $('#saveScript').prop('disabled', true);
+                        $('#deviceScreen').attr('src', '');
+                        $('#scriptPreview').text('连接设备并开始录制操作以生成脚本...');
+                        isRecording = false;
+                        $('#recordingIndicator').hide();
+
+                        // 停止屏幕更新
+                        if (screenUpdateInterval) {
+                            clearInterval(screenUpdateInterval);
+                            screenUpdateInterval = null;
+                        }
+                    }
+                    refreshDeviceList();
+                    if (callback) callback();
+                } else {
+                    alert('断开设备失败: ' + data.error);
+                }
+            });
+        }
+
+        // 开始录制
+        function startRecording() {
+            if (!currentDeviceId) return;
+
+            $.get(`/start_recording/${currentDeviceId}`, function(data) {
+                if (data.success) {
+                    isRecording = true;
+                    $('#startRecording').prop('disabled', true);
+                    $('#stopRecording').prop('disabled', false);
+                    $('#saveScript').prop('disabled', true);
+                    $('#recordingIndicator').show();
+                    $('#scriptPreview').text('正在录制操作...');
+                } else {
+                    alert('开始录制失败: ' + data.error);
+                }
+            });
+        }
+
+        // 停止录制
+        function stopRecording() {
+            if (!currentDeviceId) return;
+
+            $.get(`/stop_recording/${currentDeviceId}`, function(data) {
+                if (data.success) {
+                    isRecording = false;
+                    $('#startRecording').prop('disabled', false);
+                    $('#stopRecording').prop('disabled', true);
+                    $('#saveScript').prop('disabled', false);
+                    $('#recordingIndicator').hide();
+                } else {
+                    alert('停止录制失败: ' + data.error);
+                }
+            });
+        }
+
+        // 保存脚本
+        function saveScript() {
+            if (!currentDeviceId) return;
+
+            $.get(`/save_script/${currentDeviceId}`, function(data) {
+                if (data.success) {
+                    $('#scriptPreview').text(data.content);
+                    alert(`脚本已保存: ${data.filename}`);
+                    refreshSavedScripts();
+                } else {
+                    alert('保存脚本失败: ' + data.error);
+                }
+            });
+        }
+
+        // 刷新已保存的脚本列表
+        function refreshSavedScripts() {
+            $.get('/saved_scripts', function(data) {
+                if (data.success) {
+                    const savedScripts = $('#savedScripts');
+                    savedScripts.empty();
+
+                    if (data.scripts.length === 0) {
+                        savedScripts.append('<li class="list-group-item">暂无保存的脚本</li>');
+                    } else {
+                        data.scripts.forEach(script => {
+                            const item = $(`
+                                <li class="list-group-item script-item d-flex justify-content-between align-items-center"
+                                    data-filename="${script.filename}">
+                                    <div>
+                                        <small class="d-block text-truncate">${script.filename}</small>
+                                        <small class="text-muted">${script.modified}</small>
+                                    </div>
+                                    <i class="fas fa-download"></i>
+                                </li>
+                            `);
+                            savedScripts.append(item);
+                        });
+
+                        // 绑定下载脚本事件
+                        $('.script-item').click(function() {
+                            const filename = $(this).data('filename');
+                            downloadScript(filename);
+                        });
+                    }
+                } else {
+                    console.error('获取已保存脚本失败: ' + data.error);
+                }
+            });
+        }
+
+
+        // 下载脚本
+        function downloadScript(filename) {
+            $.get(`/download_script/${filename}`, function(data) {
+                if (data.success) {
+                    // 创建一个下载链接
+                    const blob = new Blob([data.content], { type: 'text/plain' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = filename;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                } else {
+                    alert('下载脚本失败: ' + data.error);
+                }
+            });
+        }
+
+        // 开始更新屏幕
+        function startScreenUpdates() {
+            if (!currentDeviceId) return;
+
+            function updateScreen() {
+                if (currentDeviceId) {
+                    $.get(`/screenshot/${currentDeviceId}`, function(data) {
+                        if (data.success) {
+                            $('#deviceScreen').attr('src', 'data:image/jpeg;base64,' + data.image);
+                        }
+                    }).fail(function() {
+                        console.error('获取屏幕截图失败');
+                    });
+                }
+            }
+
+            // 立即更新一次
+            updateScreen();
+
+            // 设置定时更新
+            if (screenUpdateInterval) {
+                clearInterval(screenUpdateInterval);
+            }
+            screenUpdateInterval = setInterval(updateScreen, 500);
+        }
+
+        // 处理触摸开始事件
+        function startTouch(event) {
+            if (!isRecording || !currentDeviceId) return;
+
+            lastTouchX = event.offsetX;
+            lastTouchY = event.offsetY;
+            isDragging = true;
+        }
+
+        // 处理触摸移动事件
+        function moveTouch(event) {
+            if (!isRecording || !currentDeviceId || !isDragging) return;
+
+            // 可以在这里添加滑动的视觉反馈
+        }
+
+        // 处理触摸结束事件
+        function endTouch() {
+            if (!isRecording || !currentDeviceId || !isDragging) {
+                isDragging = false;
+                return;
+            }
+
+            isDragging = false;
+            const screenWidth = $('#deviceScreen').width();
+            const screenHeight = $('#deviceScreen').height();
+            const imgNaturalWidth = $('#deviceScreen')[0].naturalWidth;
+            const imgNaturalHeight = $('#deviceScreen')[0].naturalHeight;
+
+            // 计算实际设备上的坐标（考虑缩放）
+            const scaleX = imgNaturalWidth / screenWidth;
+            const scaleY = imgNaturalHeight / screenHeight;
+
+            const endX = event.offsetX;
+            const endY = event.offsetY;
+
+            // 判断是点击还是滑动
+            const distance = Math.sqrt(Math.pow(endX - lastTouchX, 2) + Math.pow(endY - lastTouchY, 2));
+
+            let action;
+            if (distance < 5) {
+                // 点击操作
+                action = {
+                    type: 'click',
+                    x: Math.round(lastTouchX * scaleX),
+                    y: Math.round(lastTouchY * scaleY)
+                };
+            } else {
+                // 滑动操作
+                action = {
+                    type: 'swipe',
+                    x1: Math.round(lastTouchX * scaleX),
+                    y1: Math.round(lastTouchY * scaleY),
+                    x2: Math.round(endX * scaleX),
+                    y2: Math.round(endY * scaleY)
+                };
+            }
+
+            // 发送操作到服务器
+            $.ajax({
+                url: `/record_action/${currentDeviceId}`,
+                type: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify(action),
+                success: function(data) {
+                    if (!data.success) {
+                        console.error('记录操作失败: ' + data.error);
+                    }
+                }
+            });
+        }
+    </script>
+</body>
+</html>
